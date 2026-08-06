@@ -1,0 +1,201 @@
+name: Gobernanza
+
+# Los gates que solo corren en el pre-commit local (evadible con --no-verify, e
+# inexistente si nadie configuro core.hooksPath) se ejecutan aqui, en el
+# servidor, donde nadie los puede saltar. Es el limite de merge inevadible.
+#
+# El estandar Unimar no vive en una copia local (.harness/): lo provee el plugin
+# unimar-core. El runner no tiene Claude Code instalado, asi que obtiene los
+# validadores haciendo checkout del repositorio del marketplace.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  # Version del estandar, FIJADA A UN TAG. El CI de este satelite no debe cambiar
+  # de comportamiento porque alguien publique en el marketplace: subir de version
+  # es un commit aqui, revisable como cualquier otro. Apuntar a `main` renuncia a
+  # builds reproducibles.
+  STANDARD_REF: unimar-core-4.4.0
+
+  # Identificador publico de la GitHub App del CI. No es secreto: va aqui para
+  # que se vea en el diff. Lo secreto es solo la clave privada.
+  #
+  # NOTA (G-016): la plantilla del plugin 4.4.0 declara este par en un SEGUNDO
+  # bloque `env:` al mismo nivel. La clave duplicada descarta el primer mapa y el
+  # workflow se queda sin STANDARD_REF. Aqui van fusionados en un solo bloque.
+  UNIMAR_CI_CLIENT_ID: Iv23li6S5GfyBHJKzHGZ
+
+jobs:
+  gobernanza:
+    name: Validadores del estandar
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 0 -- validate-trazabilidad recorre el historial y comprueba
+      # con `git cat-file` que los hashes de evidencia de los gaps cerrados
+      # existan. Con el clon superficial por defecto (profundidad 1) no estan, y
+      # el gate reportaria como colgante toda evidencia legitima.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          # Node 22 como minimo: los validadores usan `glob` de node:fs/promises.
+          node-version: '24'
+
+      # Token efimero de la GitHub App `unimar-ci`, acotado al repositorio que
+      # se va a leer. Sustituye al token personal: una App no caduca ni pertenece
+      # a una persona. Inventario en `unimar_arch/.harness/secretos.json`.
+      #
+      # Sin `|| github.token` de reserva, a proposito: ese token no alcanza otro
+      # repositorio privado, asi que la reserva no arregla nada y convierte un
+      # secreto ausente en un fallo tardio y confuso.
+      - name: Token efimero para leer el estandar
+        id: app-token-1
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ env.UNIMAR_CI_CLIENT_ID }}
+          private-key: ${{ secrets.UNIMAR_CI_APP_KEY }}
+          owner: unimar-peru
+          repositories: unimar-marketplace
+
+      - name: Obtener el estandar
+        uses: actions/checkout@v4
+        with:
+          repository: unimar-peru/unimar-marketplace
+          ref: ${{ env.STANDARD_REF }}
+          token: ${{ steps.app-token-1.outputs.token }}
+          path: .estandar
+
+      - name: Ruta de los validadores
+        run: echo "UNIMAR_CORE=$GITHUB_WORKSPACE/.estandar/plugins/unimar-core" >> "$GITHUB_ENV"
+
+      # Sin --fix: modo verificacion. Falla si MADUREZ.md o GAPS.md no estan
+      # normalizados, en vez de arreglarlos en silencio.
+      - name: Madurez medida y con evidencia (S-19)
+        run: node "$UNIMAR_CORE/scripts/validate-madurez.mjs"
+
+      - name: Registro de gaps valido y ordenado (S-20)
+        run: node "$UNIMAR_CORE/scripts/validate-gaps.mjs"
+
+      - name: Cada casilla de madurez < 5 tiene su gap (S-19, S-20)
+        run: node "$UNIMAR_CORE/scripts/validate-correspondencia.mjs"
+
+      - name: Encoding, texto mutilado, enlaces y anclas (S-09, S-10, SD-06)
+        run: node "$UNIMAR_CORE/scripts/validate-docs.mjs"
+
+      - name: Ninguna referencia G-NNN o ADR-NNNN cuelga (SD-02)
+        run: node "$UNIMAR_CORE/scripts/validate-trazabilidad.mjs"
+
+      - name: Estructura de los artefactos SDLC (S-01..S-05, S-13)
+        run: node "$UNIMAR_CORE/scripts/validate-satellite-base.mjs"
+
+      - name: Las reglas de herencia estan triajadas (S-15, S-16)
+        run: node "$UNIMAR_CORE/scripts/validate-triaje.mjs"
+
+      # Estructura del satelite: CONTRIBUTING.md con bucle de retorno, raiz de
+      # fuente declarada, esqueleto de la taxonomia, y ningun marcador sin
+      # sustituir. Sin esta puerta, S-18 depende de que el operador la recuerde.
+      - name: Estructura del satelite (S-16, S-18)
+        run: node "$UNIMAR_CORE/scripts/validate-estructura-satelite.mjs"
+
+      # Ubicacion de los artefactos SDLC (contrato de ubicacion, G-017): las cinco
+      # fases materializadas con su hub, y ningun artefacto generado suelto en
+      # docs/ raiz o bajo reference/. No aplica en libreria (ADR-0069).
+      - name: Ubicacion de artefactos SDLC (S-01..S-05, S-18)
+        run: node "$UNIMAR_CORE/scripts/validate-ubicacion-artefactos.mjs"
+
+      # Indice de iniciativas publicado (S-25, ADR-0140): un satelite de producto
+      # con PRDs DEBE publicar su initiatives-index.json y listar en el todos sus
+      # PRDs. Solo lectura; el gate F1 del tablero cubre continuidad/alcanzabilidad.
+      - name: Indice de iniciativas publicado (S-25)
+        run: node "$UNIMAR_CORE/scripts/validate-prd-index.mjs"
+
+      # Fase 1 define, el tablero planifica (S-24, ADR-0134). Bloquea el gantt, el
+      # eje temporal, el trimestre como horizonte y las fechas de entrega
+      # declaradas por nombre; avisa de lo heuristico. Exceptua el historial de
+      # cambios (S-13): un gate que lo marcara empujaria a falsearlo.
+      - name: Fase 1 sin calendario (S-24)
+        run: node "$UNIMAR_CORE/scripts/validate-s24-fase1.mjs"
+
+      # Aviso, no puerta: la heuristica de SD-04 tiene falsos positivos. Sale 0
+      # aunque encuentre candidatos; su salida se lee en el log del PR.
+      - name: Criterios de aceptacion verificables (SD-04, aviso)
+        run: node "$UNIMAR_CORE/scripts/validate-criterios.mjs"
+
+      # Aviso, no puerta (ADR-0106 S6): los gates locales son la postura de
+      # seguridad; este paso solo reporta si el satelite los cablea. La seguridad
+      # no depende de este CI (P-LOCAL-02) — se corre aqui por visibilidad.
+      - name: Gates locales de calidad y seguridad (S-23, aviso)
+        run: node "$UNIMAR_CORE/scripts/validate-gates-locales.mjs"
+
+      # Aviso: coherencia del modelo Suite -> Sistema -> PRD (ADR-0120), si el
+      # satelite declara suite.yaml/sistema.yaml.
+      - name: Modelo Suite -> Sistema -> PRD (ADR-0120, aviso)
+        run: node "$UNIMAR_CORE/scripts/validate-suite.mjs"
+
+      - name: Lint de Markdown
+        run: >
+          npx --yes markdownlint-cli@0.39.0
+          --config .markdownlint.json
+          --ignore .claude --ignore _bmad --ignore _bmad-output --ignore .estandar
+          "**/*.md"
+
+  # Job de build y pruebas del satelite (gate F3/F4 del SDLC).
+  #
+  # Este satelite todavia no aloja codigo ejecutable bajo src/ (G-008). Hasta que
+  # DEMO1 o DEMO2 publiquen su primer servicio, la "build" es el lint documental
+  # y las "pruebas" son el barrido de ubicacion de artefactos y del modelo
+  # Suite -> Sistema. Coincide con COMANDO_BUILD y COMANDO_PRUEBAS de
+  # CONTRIBUTING.md y con los pasos 9 y 10 de .husky/pre-commit.
+  build-y-pruebas:
+    name: Build y pruebas del runtime
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Token efimero para leer el estandar
+        id: app-token-2
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ env.UNIMAR_CI_CLIENT_ID }}
+          private-key: ${{ secrets.UNIMAR_CI_APP_KEY }}
+          owner: unimar-peru
+          repositories: unimar-marketplace
+
+      - name: Obtener el estandar
+        uses: actions/checkout@v4
+        with:
+          repository: unimar-peru/unimar-marketplace
+          ref: ${{ env.STANDARD_REF }}
+          token: ${{ steps.app-token-2.outputs.token }}
+          path: .estandar
+
+      - name: Ruta de los validadores
+        run: echo "UNIMAR_CORE=$GITHUB_WORKSPACE/.estandar/plugins/unimar-core" >> "$GITHUB_ENV"
+
+      # Build: lint documental sobre todo el corpus.
+      - name: Build (lint documental)
+        run: >
+          npx --yes markdownlint-cli@0.39.0
+          --config .markdownlint.json
+          --ignore .claude --ignore _bmad --ignore _bmad-output --ignore .estandar
+          "**/*.md"
+
+      # Pruebas: las cinco fases con su hub y cada obligatorio en su ruta
+      # canonica, y la coherencia del modelo Suite -> Sistema.
+      - name: Pruebas (ubicacion de artefactos y modelo Suite)
+        run: |
+          node "$UNIMAR_CORE/scripts/validate-ubicacion-artefactos.mjs"
+          node "$UNIMAR_CORE/scripts/validate-suite.mjs"

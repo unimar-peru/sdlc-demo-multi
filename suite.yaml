@@ -1,0 +1,19 @@
+# suite.yaml — declaración de la Suite (ADR-0120 §2.5)
+#
+# `sistemas` va como secuencia EN BLOQUE, no en flujo, por decisión D-004 de
+# DECISIONS.md: en unimar-core@4.1.0 `scaffold-artefactos-fase.mjs` solo reconoce
+# esta forma y `validate-suite.mjs` solo la de flujo del ejemplo del ADR. Se
+# prioriza la que materializa el árbol documental. Divergencia registrada en G-015.
+#
+# DEMO1 y DEMO2 NO son siglas `Ratificada` del catálogo de sistemas: son
+# ficticias y de uso exclusivamente demostrativo (D-003, G-014).
+suite:
+  id: MPS
+  nombre: Multi-Product Sample
+  capa: Demostracion
+  owner: Architecture Board
+  sistemas:
+    - DEMO1
+    - DEMO2
+  apps_compartidas: []
+  satelites_apoyo: []
