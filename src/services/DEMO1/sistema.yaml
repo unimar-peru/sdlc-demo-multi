@@ -1,0 +1,12 @@
+# sistema.yaml — declaración del Sistema (ADR-0120 §2.5)
+# Sigla ficticia de demostración; no pertenece al catálogo de sistemas (D-003, G-014).
+sistema:
+  sigla: DEMO1
+  nombre: Sistema de Demostración 1
+  estado_sigla: No-catalogada
+  suite: MPS
+  fase: 1
+  tipo: producto
+  product_owner: Architecture Board
+  repositorio: sdlc-demo-multi
+  raiz_codigo: src/services/DEMO1
